@@ -6,54 +6,65 @@
   <title>Leitor de Ponto OCR</title>
   <link rel="manifest" href="manifest.json">
   <style>
-    body { font-family: sans-serif; text-align: center; padding: 20px; background: #f4f4f9; }
-    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 400px; margin: 0 auto; }
-    button { background: #007bff; color: white; border: none; padding: 15px 25px; font-size: 16px; border-radius: 8px; cursor: pointer; width: 100%; margin-top: 10px; }
-    button:disabled { background: #ccc; }
-    video, canvas { width: 100%; border-radius: 8px; margin-top: 10px; display: none; }
-    #status { margin-top: 15px; font-weight: bold; color: #333; }
+    body { font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 15px; background: #f4f4f9; margin: 0; }
+    .card { background: white; padding: 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 420px; margin: 0 auto; }
+    h2 { margin-top: 0; color: #1a1a1a; }
+    p { color: #666; font-size: 14px; }
+    button { background: #007bff; color: white; border: none; padding: 16px 20px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; width: 100%; margin-top: 12px; }
+    button:disabled { background: #cccccc; }
+    .btn-capture { background: #28a745; display: none; }
+    video, canvas { width: 100%; max-height: 320px; object-fit: cover; border-radius: 10px; margin-top: 12px; border: 2px solid #ddd; }
+    #video { display: none; }
+    #canvas { display: none; }
+    #status { margin-top: 15px; font-weight: 600; font-size: 14px; color: #333; line-height: 1.4; }
   </style>
-  <!-- Biblioteca Tesseract.js para OCR Offline no navegador -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
 
 <div class="card">
   <h2>Leitor de Ponto</h2>
-  <p>Aproxime o papel do ponto da câmera</p>
+  <p>Alinhe o comprovante na tela antes de capturar</p>
   
   <video id="video" autoplay playsinline></video>
   <canvas id="canvas"></canvas>
   
-  <button id="btn-scan" onclick="iniciarLeitura()">📷 Escanear Ponto</button>
-  <div id="status">Pronto para escanear</div>
+  <button id="btn-open" onclick="abrirCamera()">📷 Abrir Câmera</button>
+  <button id="btn-capture" class="btn-capture" onclick="capturarEEscanear()">✅ Capturar e Ler Ponto</button>
+  
+  <div id="status">Aguardando início...</div>
 </div>
 
 <script>
-  // COLOQUE AQUI A URL DO SEU GOOGLE APPS SCRIPT
-  const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxBa-m07DSFU9fsdFOxAPBpjm08H-KgGbtffS4cEg92FY-yVJQwQKFFqewe9mHTKZXu2g/exec";
+  // INSIRA AQUI A URL COMPLETA DO SEU GOOGLE APPS SCRIPT
+  const APPS_SCRIPT_URL = "SUA_URL_DO_GOOGLE_APPS_SCRIPT_AQUI";
 
   let stream = null;
 
-  async function iniciarLeitura() {
+  async function abrirCamera() {
     const video = document.getElementById('video');
     const status = document.getElementById('status');
-    const btn = document.getElementById('btn-scan');
+    const btnOpen = document.getElementById('btn-open');
+    const btnCapture = document.getElementById('btn-capture');
 
-    btn.disabled = true;
-    status.innerText = "Abrindo câmera...";
+    status.innerText = "Iniciando câmera...";
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      // Força o uso da câmera traseira com resolução otimizada
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      }).catch(() => {
+        // Fallback caso a restrição exata falhe no navegador
+        return navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      });
+
       video.srcObject = stream;
       video.style.display = "block";
-      status.innerText = "Aponte para o comprovante...";
-      
-      // Captura o frame após 2.5 segundos de estabilização
-      setTimeout(() => capturarEEscanear(), 2500);
+      btnOpen.style.display = "none";
+      btnCapture.style.display = "block";
+      status.innerText = "Enquadre o papel e clique em 'Capturar e Ler Ponto'.";
     } catch (err) {
-      status.innerText = "Erro ao acessar a câmera: " + err.message;
-      btn.disabled = false;
+      status.innerText = "❌ Erro ao acessar a câmera: " + err.message;
     }
   }
 
@@ -61,61 +72,76 @@
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const status = document.getElementById('status');
-    const btn = document.getElementById('btn-scan');
+    const btnCapture = document.getElementById('btn-capture');
+    const btnOpen = document.getElementById('btn-open');
+
+    btnCapture.disabled = true;
+    status.innerText = "Processando imagem e executando OCR...";
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Para a câmera
+    // Binarização e Aumento de Contraste para Papel Térmico
+    let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      let avg = (d[i] + d[i + 1] + d[i + 2]) / 3;
+      // Filtro de alto contraste
+      let v = avg < 130 ? 0 : 255;
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    // Encerra fluxo da câmera após tirar a foto
     if (stream) stream.getTracks().forEach(track => track.stop());
     video.style.display = "none";
 
-    status.innerText = "Lendo texto via OCR (Offline)...";
+    // OCR local via Tesseract
+    try {
+      const worker = await Tesseract.createWorker('por');
+      const ret = await worker.recognize(canvas);
+      await worker.terminate();
 
-    // Executa OCR localmente
-    const worker = await Tesseract.createWorker('por');
-    const ret = await worker.recognize(canvas);
-    await worker.terminate();
+      processarTextoOCR(ret.data.text);
+    } catch (e) {
+      status.innerText = "❌ Erro ao processar OCR local.";
+    }
 
-    const texto = ret.data.text;
-    processarTextoOCR(texto);
-    btn.disabled = false;
+    btnCapture.style.display = "none";
+    btnCapture.disabled = false;
+    btnOpen.style.display = "block";
   }
 
   function processarTextoOCR(texto) {
     const status = document.getElementById('status');
-    
-    // Expressões regulares para extrair Data e Hora
-    const regexData = /(\d{2}\/\d{2}\/\d{4})/;
-    const regexHora = /(\d{2}:\d{2})/;
 
-    const matchData = texto.match(regexData);
-    const matchHora = texto.match(regexHora);
+    // Regex para Data e Hora
+    const matchData = texto.match(/(\d{2}\/\d{2}\/\d{4})/);
+    const matchHora = texto.match(/(\d{2}:\d{2})/);
 
     if (!matchData || !matchHora) {
-      status.innerText = "⚠️ Erro na leitura. Tente novamente aproximando mais o papel.";
+      status.innerText = "⚠️ Não foi possível ler a Data/Hora. Tente novamente aproximando e focando bem os números.";
       return;
     }
 
     const data = matchData[0];
     const hora = matchHora[0];
 
-    // Lógica para determinar a batida pelo horário
+    // Identificação de turno pelo horário
     const horaNum = parseInt(hora.split(':')[0]);
     let batida = "1a batida";
     if (horaNum >= 11 && horaNum < 13) batida = "2a batida";
     else if (horaNum >= 13 && horaNum < 15) batida = "3a batida";
     else if (horaNum >= 17) batida = "4a batida";
 
-    status.innerText = `Lido: ${data} às ${hora} (${batida})`;
+    status.innerText = `✅ Lido com Sucesso!\nData: ${data} | Hora: ${hora} (${batida})`;
 
     salvarEEnviar({ data, hora, batida });
   }
 
   function salvarEEnviar(registro) {
-    const status = document.getElementById('status');
     let fila = JSON.parse(localStorage.getItem('fila_ponto') || '[]');
     fila.push(registro);
     localStorage.setItem('fila_ponto', JSON.stringify(fila));
@@ -123,7 +149,7 @@
     if (navigator.onLine) {
       sincronizarComGoogleSheets();
     } else {
-      status.innerText += " - Salvo offline! Será enviado quando houver rede.";
+      document.getElementById('status').innerText += "\n💾 Salvo localmente (Offline). Será enviado quando houver rede.";
     }
   }
 
@@ -131,8 +157,6 @@
     const status = document.getElementById('status');
     let fila = JSON.parse(localStorage.getItem('fila_ponto') || '[]');
     if (fila.length === 0) return;
-
-    status.innerText = "Sincronizando com o Google Sheets...";
 
     try {
       for (const item of fila) {
@@ -144,16 +168,14 @@
         });
       }
       localStorage.removeItem('fila_ponto');
-      status.innerText = "✅ Registrado e sincronizado com sucesso!";
+      status.innerText += "\n📊 Dados enviados para o Google Sheets!";
     } catch (e) {
-      status.innerText = "⚠️ Salvo offline. Falha ao conectar ao Sheets.";
+      status.innerText += "\n⚠️ Falha ao sincronizar online.";
     }
   }
 
-  // Tenta sincronizar ao reconectar a rede
   window.addEventListener('online', sincronizarComGoogleSheets);
 
-  // Registro do Service Worker para suporte Offline
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js');
   }
