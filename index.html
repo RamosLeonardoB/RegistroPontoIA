@@ -3,32 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Leitor de Ponto OCR v1.1.0</title>
+  <title>Leitor de Ponto OCR v1.2.0</title>
   <link rel="manifest" href="manifest.json">
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 15px; background: #f4f4f9; margin: 0; }
     .card { background: white; padding: 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 420px; margin: 0 auto; }
-    .version-tag { font-size: 11px; background: #e0e0e0; color: #555; padding: 3px 8px; border-radius: 12px; display: inline-block; margin-bottom: 8px; font-weight: bold; }
+    .version-tag { font-size: 11px; background: #28a745; color: white; padding: 3px 8px; border-radius: 12px; display: inline-block; margin-bottom: 8px; font-weight: bold; }
     h2 { margin: 4px 0 0 0; color: #1a1a1a; }
     p { color: #666; font-size: 14px; margin-bottom: 15px; }
-    button { background: #007bff; color: white; border: none; padding: 16px 20px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; width: 100%; margin-top: 12px; }
-    button:disabled { background: #cccccc; }
-    .btn-capture { background: #28a745; display: none; }
     
-    /* Container da câmera com moldura e indicação de foco */
-    .camera-container { position: relative; width: 100%; max-height: 320px; overflow: hidden; border-radius: 10px; display: none; margin-top: 10px; }
-    video { width: 100%; height: 320px; object-fit: cover; }
+    .btn-main { background: #007bff; color: white; border: none; padding: 16px 20px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; width: 100%; margin-top: 12px; display: block; }
+    input[type="file"] { display: none; }
     
-    /* Overlay com a borda dinâmica (Vermelha = Desfocado / Verde = Foco OK) */
-    .overlay-guide {
-      position: absolute; top: 10%; left: 10%; width: 80%; height: 80%;
-      border: 3px dashed #dc3545; border-radius: 12px;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
-      transition: border-color 0.3s ease, border-style 0.3s ease;
-      pointer-events: none;
-    }
-    .overlay-guide.foco-ok { border: 4px solid #28a745; border-style: solid; }
-
+    #preview-img { width: 100%; max-height: 250px; object-fit: contain; border-radius: 10px; margin-top: 10px; border: 1px solid #ddd; display: none; }
     canvas { display: none; }
     #status { margin-top: 15px; font-weight: 600; font-size: 14px; color: #333; line-height: 1.4; white-space: pre-line; }
   </style>
@@ -37,155 +24,92 @@
 <body>
 
 <div class="card">
-  <span class="version-tag">Versão 1.1.0</span>
+  <span class="version-tag">Versão 1.2.0 (Offline)</span>
   <h2>Leitor de Ponto</h2>
-  <p>Enquadre o texto dentro do retângulo verde antes de ler</p>
+  <p>Tire uma foto legível e aproximada do comprovante</p>
   
-  <div class="camera-container" id="cam-container">
-    <video id="video" autoplay playsinline></video>
-    <div class="overlay-guide" id="guide"></div>
-  </div>
-
+  <img id="preview-img" alt="Prévia da foto">
   <canvas id="canvas"></canvas>
   
-  <button id="btn-open" onclick="abrirCamera()">📷 Abrir Câmera</button>
-  <button id="btn-capture" class="btn-capture" onclick="capturarEEscanear()">✅ Capturar e Ler Ponto</button>
+  <label for="camera-input" class="btn-main">📷 Escanear Comprovante</label>
+  <input type="file" id="camera-input" accept="image/*" capture="environment" onchange="processarFoto(event)">
   
-  <div id="status">Aguardando início...</div>
+  <div id="status">Aguardando imagem...</div>
 </div>
 
 <script>
   // INSIRA AQUI A URL DO SEU GOOGLE APPS SCRIPT
   const APPS_SCRIPT_URL = "SUA_URL_DO_GOOGLE_APPS_SCRIPT_AQUI";
 
-  let stream = null;
-  let focusInterval = null;
+  async function processarFoto(event) {
+    const file = event.target.files[0];
+    if (!file) return;
 
-  async function abrirCamera() {
-    const video = document.getElementById('video');
-    const container = document.getElementById('cam-container');
     const status = document.getElementById('status');
-    const btnOpen = document.getElementById('btn-open');
-    const btnCapture = document.getElementById('btn-capture');
-
-    status.innerText = "Iniciando câmera e sistema de foco...";
-
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
-      }).catch(() => {
-        return navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      });
-
-      video.srcObject = stream;
-      container.style.display = "block";
-      btnOpen.style.display = "none";
-      btnCapture.style.display = "block";
-      status.innerText = "Mantenha a mão firme até a borda ficar verde.";
-
-      // Inicia verificação de nitidez do foco
-      focusInterval = setInterval(analisarFoco, 400);
-    } catch (err) {
-      status.innerText = "❌ Erro ao acessar a câmera: " + err.message;
-    }
-  }
-
-  // Avaliação em tempo real do nitidez do quadro
-  function analisarFoco() {
-    const video = document.getElementById('video');
-    const guide = document.getElementById('guide');
-    const status = document.getElementById('status');
-    if (!video.videoWidth) return;
-
-    const canvasTemp = document.createElement('canvas');
-    const ctx = canvasTemp.getContext('2d');
-    canvasTemp.width = 160;
-    canvasTemp.height = 120;
-    ctx.drawImage(video, 0, 0, 160, 120);
-
-    const imgData = ctx.getImageData(0, 0, 160, 120).data;
-    let laplacianoVar = calcularVarianciaNitidez(imgData, 160, 120);
-
-    // Limiar empírico para nitidez
-    if (laplacianoVar > 120) {
-      guide.classList.add('foco-ok');
-      status.innerText = "🟢 Foco Excelente! Pode capturar.";
-    } else {
-      guide.classList.remove('foco-ok');
-      status.innerText = "🟡 Ajustando foco... Aproxime ou afaste um pouco.";
-    }
-  }
-
-  function calcularVarianciaNitidez(data, width, height) {
-    let sum = 0, sumSq = 0, count = 0;
-    for (let i = 0; i < data.length; i += 8) { // Amostragem rápida
-      let gray = (data[i] + data[i+1] + data[i+2]) / 3;
-      sum += gray;
-      sumSq += gray * gray;
-      count++;
-    }
-    let mean = sum / count;
-    return (sumSq / count) - (mean * mean);
-  }
-
-  async function capturarEEscanear() {
-    clearInterval(focusInterval);
-    const video = document.getElementById('video');
-    const container = document.getElementById('cam-container');
+    const preview = document.getElementById('preview-img');
     const canvas = document.getElementById('canvas');
-    const status = document.getElementById('status');
-    const btnCapture = document.getElementById('btn-capture');
-    const btnOpen = document.getElementById('btn-open');
-
-    btnCapture.disabled = true;
-    status.innerText = "📷 Imagem capturada! Aplicando filtros de texto...";
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Aplicação de filtro de binarização adaptativa para papel térmico
-    let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    let d = imgData.data;
-    for (let i = 0; i < d.length; i += 4) {
-      let avg = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
-      let v = avg < 140 ? 0 : 255; // Realça caracteres escuros sobre o papel claro
-      d[i] = d[i + 1] = d[i + 2] = v;
-    }
-    ctx.putImageData(imgData, 0, 0);
+    status.innerText = "⏳ Carregando imagem e otimizando para leitura offline...";
 
-    if (stream) stream.getTracks().forEach(track => track.stop());
-    container.style.display = "none";
+    const img = new Image();
+    img.src = URL.createObjectURL(file);
 
-    status.innerText = "🔍 Executando OCR (Tesseract v1.1.0)...";
+    img.onload = async () => {
+      preview.src = img.src;
+      preview.style.display = "block";
 
-    try {
-      const worker = await Tesseract.createWorker('por');
-      const ret = await worker.recognize(canvas);
-      await worker.terminate();
+      // Redimensiona mantendo proporção para alta definição no OCR
+      const maxDim = 1200;
+      let width = img.width;
+      let height = img.height;
+      if (width > height && width > maxDim) {
+        height = (height * maxDim) / width;
+        width = maxDim;
+      } else if (height > maxDim) {
+        width = (width * maxDim) / height;
+        height = maxDim;
+      }
 
-      processarTextoOCR(ret.data.text);
-    } catch (e) {
-      status.innerText = "❌ Erro ao processar o OCR.";
-    }
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
 
-    btnCapture.style.display = "none";
-    btnCapture.disabled = false;
-    btnOpen.style.display = "block";
+      // Filtro avançado de P&B / Contraste para papel térmico
+      let imgData = ctx.getImageData(0, 0, width, height);
+      let d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        let gray = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+        let v = gray < 135 ? 0 : 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      status.innerText = "🔍 Executando OCR Offline (Tesseract)...";
+
+      try {
+        const worker = await Tesseract.createWorker('por');
+        const ret = await worker.recognize(canvas);
+        await worker.terminate();
+
+        extrairEDados(ret.data.text);
+      } catch (err) {
+        status.innerText = "❌ Erro ao ler a imagem offline: " + err.message;
+      }
+    };
   }
 
-  function processarTextoOCR(texto) {
+  function extrairEDados(texto) {
     const status = document.getElementById('status');
 
-    // Normalização de texto OCR (evita erros comuns de leitura como O/0 ou S/5)
-    let textoLimpo = texto.replace(/O/g, '0').replace(/o/g, '0');
+    // Normalização de caracteres comuns trocados pelo OCR
+    let textoLimpo = texto.replace(/O/g, '0').replace(/o/g, '0').replace(/I/g, '1').replace(/l/g, '1');
 
     const matchData = textoLimpo.match(/(\d{2}\/\d{2}\/\d{4})/);
     const matchHora = textoLimpo.match(/(\d{2}:\d{2})/);
 
     if (!matchData || !matchHora) {
-      status.innerText = "⚠️ Não foi possível ler a Data/Hora.\nCertifique-se de que os números fiquem bem dentro da borda verde.";
+      status.innerText = "⚠️ Não foi possível identificar Data ou Hora.\nTente tirar a foto mais de perto e com boa iluminação.";
       return;
     }
 
@@ -198,12 +122,13 @@
     else if (horaNum >= 13 && horaNum < 15) batida = "3a batida";
     else if (horaNum >= 17) batida = "4a batida";
 
-    status.innerText = `✅ Sucesso (v1.1.0)!\nData: ${data} | Hora: ${hora} (${batida})`;
+    status.innerText = `✅ Lido com Sucesso (v1.2.0)!\nData: ${data} | Hora: ${hora} (${batida})`;
 
     salvarEEnviar({ data, hora, batida });
   }
 
   function salvarEEnviar(registro) {
+    const status = document.getElementById('status');
     let fila = JSON.parse(localStorage.getItem('fila_ponto') || '[]');
     fila.push(registro);
     localStorage.setItem('fila_ponto', JSON.stringify(fila));
@@ -211,7 +136,7 @@
     if (navigator.onLine) {
       sincronizarComGoogleSheets();
     } else {
-      document.getElementById('status').innerText += "\n💾 Salvo offline. Será enviado ao reconectar.";
+      status.innerText += "\n💾 Salvo na memória local do celular (Offline).\nSerá enviado automaticamente quando conectar à internet.";
     }
   }
 
@@ -230,9 +155,9 @@
         });
       }
       localStorage.removeItem('fila_ponto');
-      status.innerText += "\n📊 Enviado com sucesso para o Google Sheets!";
+      status.innerText += "\n📊 Ponto sincronizado com a Planilha do Google!";
     } catch (e) {
-      status.innerText += "\n⚠️ Salvo localmente. Falha ao conectar com o Sheets.";
+      status.innerText += "\n⚠️ Salvo offline. Falha ao conectar ao servidor.";
     }
   }
 
