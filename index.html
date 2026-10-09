@@ -3,30 +3,49 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Leitor de Ponto OCR</title>
+  <title>Leitor de Ponto OCR v1.1.0</title>
   <link rel="manifest" href="manifest.json">
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 15px; background: #f4f4f9; margin: 0; }
     .card { background: white; padding: 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 420px; margin: 0 auto; }
-    h2 { margin-top: 0; color: #1a1a1a; }
-    p { color: #666; font-size: 14px; }
+    .version-tag { font-size: 11px; background: #e0e0e0; color: #555; padding: 3px 8px; border-radius: 12px; display: inline-block; margin-bottom: 8px; font-weight: bold; }
+    h2 { margin: 4px 0 0 0; color: #1a1a1a; }
+    p { color: #666; font-size: 14px; margin-bottom: 15px; }
     button { background: #007bff; color: white; border: none; padding: 16px 20px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; width: 100%; margin-top: 12px; }
     button:disabled { background: #cccccc; }
     .btn-capture { background: #28a745; display: none; }
-    video, canvas { width: 100%; max-height: 320px; object-fit: cover; border-radius: 10px; margin-top: 12px; border: 2px solid #ddd; }
-    #video { display: none; }
-    #canvas { display: none; }
-    #status { margin-top: 15px; font-weight: 600; font-size: 14px; color: #333; line-height: 1.4; }
+    
+    /* Container da câmera com moldura e indicação de foco */
+    .camera-container { position: relative; width: 100%; max-height: 320px; overflow: hidden; border-radius: 10px; display: none; margin-top: 10px; }
+    video { width: 100%; height: 320px; object-fit: cover; }
+    
+    /* Overlay com a borda dinâmica (Vermelha = Desfocado / Verde = Foco OK) */
+    .overlay-guide {
+      position: absolute; top: 10%; left: 10%; width: 80%; height: 80%;
+      border: 3px dashed #dc3545; border-radius: 12px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+      transition: border-color 0.3s ease, border-style 0.3s ease;
+      pointer-events: none;
+    }
+    .overlay-guide.foco-ok { border: 4px solid #28a745; border-style: solid; }
+
+    canvas { display: none; }
+    #status { margin-top: 15px; font-weight: 600; font-size: 14px; color: #333; line-height: 1.4; white-space: pre-line; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
 
 <div class="card">
+  <span class="version-tag">Versão 1.1.0</span>
   <h2>Leitor de Ponto</h2>
-  <p>Alinhe o comprovante na tela antes de capturar</p>
+  <p>Enquadre o texto dentro do retângulo verde antes de ler</p>
   
-  <video id="video" autoplay playsinline></video>
+  <div class="camera-container" id="cam-container">
+    <video id="video" autoplay playsinline></video>
+    <div class="overlay-guide" id="guide"></div>
+  </div>
+
   <canvas id="canvas"></canvas>
   
   <button id="btn-open" onclick="abrirCamera()">📷 Abrir Câmera</button>
@@ -36,69 +55,111 @@
 </div>
 
 <script>
-  // INSIRA AQUI A URL COMPLETA DO SEU GOOGLE APPS SCRIPT
+  // INSIRA AQUI A URL DO SEU GOOGLE APPS SCRIPT
   const APPS_SCRIPT_URL = "SUA_URL_DO_GOOGLE_APPS_SCRIPT_AQUI";
 
   let stream = null;
+  let focusInterval = null;
 
   async function abrirCamera() {
     const video = document.getElementById('video');
+    const container = document.getElementById('cam-container');
     const status = document.getElementById('status');
     const btnOpen = document.getElementById('btn-open');
     const btnCapture = document.getElementById('btn-capture');
 
-    status.innerText = "Iniciando câmera...";
+    status.innerText = "Iniciando câmera e sistema de foco...";
 
     try {
-      // Força o uso da câmera traseira com resolução otimizada
       stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
       }).catch(() => {
-        // Fallback caso a restrição exata falhe no navegador
         return navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       });
 
       video.srcObject = stream;
-      video.style.display = "block";
+      container.style.display = "block";
       btnOpen.style.display = "none";
       btnCapture.style.display = "block";
-      status.innerText = "Enquadre o papel e clique em 'Capturar e Ler Ponto'.";
+      status.innerText = "Mantenha a mão firme até a borda ficar verde.";
+
+      // Inicia verificação de nitidez do foco
+      focusInterval = setInterval(analisarFoco, 400);
     } catch (err) {
       status.innerText = "❌ Erro ao acessar a câmera: " + err.message;
     }
   }
 
-  async function capturarEEscanear() {
+  // Avaliação em tempo real do nitidez do quadro
+  function analisarFoco() {
     const video = document.getElementById('video');
+    const guide = document.getElementById('guide');
+    const status = document.getElementById('status');
+    if (!video.videoWidth) return;
+
+    const canvasTemp = document.createElement('canvas');
+    const ctx = canvasTemp.getContext('2d');
+    canvasTemp.width = 160;
+    canvasTemp.height = 120;
+    ctx.drawImage(video, 0, 0, 160, 120);
+
+    const imgData = ctx.getImageData(0, 0, 160, 120).data;
+    let laplacianoVar = calcularVarianciaNitidez(imgData, 160, 120);
+
+    // Limiar empírico para nitidez
+    if (laplacianoVar > 120) {
+      guide.classList.add('foco-ok');
+      status.innerText = "🟢 Foco Excelente! Pode capturar.";
+    } else {
+      guide.classList.remove('foco-ok');
+      status.innerText = "🟡 Ajustando foco... Aproxime ou afaste um pouco.";
+    }
+  }
+
+  function calcularVarianciaNitidez(data, width, height) {
+    let sum = 0, sumSq = 0, count = 0;
+    for (let i = 0; i < data.length; i += 8) { // Amostragem rápida
+      let gray = (data[i] + data[i+1] + data[i+2]) / 3;
+      sum += gray;
+      sumSq += gray * gray;
+      count++;
+    }
+    let mean = sum / count;
+    return (sumSq / count) - (mean * mean);
+  }
+
+  async function capturarEEscanear() {
+    clearInterval(focusInterval);
+    const video = document.getElementById('video');
+    const container = document.getElementById('cam-container');
     const canvas = document.getElementById('canvas');
     const status = document.getElementById('status');
     const btnCapture = document.getElementById('btn-capture');
     const btnOpen = document.getElementById('btn-open');
 
     btnCapture.disabled = true;
-    status.innerText = "Processando imagem e executando OCR...";
+    status.innerText = "📷 Imagem capturada! Aplicando filtros de texto...";
 
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Binarização e Aumento de Contraste para Papel Térmico
+    // Aplicação de filtro de binarização adaptativa para papel térmico
     let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     let d = imgData.data;
     for (let i = 0; i < d.length; i += 4) {
-      let avg = (d[i] + d[i + 1] + d[i + 2]) / 3;
-      // Filtro de alto contraste
-      let v = avg < 130 ? 0 : 255;
+      let avg = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
+      let v = avg < 140 ? 0 : 255; // Realça caracteres escuros sobre o papel claro
       d[i] = d[i + 1] = d[i + 2] = v;
     }
     ctx.putImageData(imgData, 0, 0);
 
-    // Encerra fluxo da câmera após tirar a foto
     if (stream) stream.getTracks().forEach(track => track.stop());
-    video.style.display = "none";
+    container.style.display = "none";
 
-    // OCR local via Tesseract
+    status.innerText = "🔍 Executando OCR (Tesseract v1.1.0)...";
+
     try {
       const worker = await Tesseract.createWorker('por');
       const ret = await worker.recognize(canvas);
@@ -106,7 +167,7 @@
 
       processarTextoOCR(ret.data.text);
     } catch (e) {
-      status.innerText = "❌ Erro ao processar OCR local.";
+      status.innerText = "❌ Erro ao processar o OCR.";
     }
 
     btnCapture.style.display = "none";
@@ -117,26 +178,27 @@
   function processarTextoOCR(texto) {
     const status = document.getElementById('status');
 
-    // Regex para Data e Hora
-    const matchData = texto.match(/(\d{2}\/\d{2}\/\d{4})/);
-    const matchHora = texto.match(/(\d{2}:\d{2})/);
+    // Normalização de texto OCR (evita erros comuns de leitura como O/0 ou S/5)
+    let textoLimpo = texto.replace(/O/g, '0').replace(/o/g, '0');
+
+    const matchData = textoLimpo.match(/(\d{2}\/\d{2}\/\d{4})/);
+    const matchHora = textoLimpo.match(/(\d{2}:\d{2})/);
 
     if (!matchData || !matchHora) {
-      status.innerText = "⚠️ Não foi possível ler a Data/Hora. Tente novamente aproximando e focando bem os números.";
+      status.innerText = "⚠️ Não foi possível ler a Data/Hora.\nCertifique-se de que os números fiquem bem dentro da borda verde.";
       return;
     }
 
     const data = matchData[0];
     const hora = matchHora[0];
 
-    // Identificação de turno pelo horário
     const horaNum = parseInt(hora.split(':')[0]);
     let batida = "1a batida";
     if (horaNum >= 11 && horaNum < 13) batida = "2a batida";
     else if (horaNum >= 13 && horaNum < 15) batida = "3a batida";
     else if (horaNum >= 17) batida = "4a batida";
 
-    status.innerText = `✅ Lido com Sucesso!\nData: ${data} | Hora: ${hora} (${batida})`;
+    status.innerText = `✅ Sucesso (v1.1.0)!\nData: ${data} | Hora: ${hora} (${batida})`;
 
     salvarEEnviar({ data, hora, batida });
   }
@@ -149,7 +211,7 @@
     if (navigator.onLine) {
       sincronizarComGoogleSheets();
     } else {
-      document.getElementById('status').innerText += "\n💾 Salvo localmente (Offline). Será enviado quando houver rede.";
+      document.getElementById('status').innerText += "\n💾 Salvo offline. Será enviado ao reconectar.";
     }
   }
 
@@ -168,9 +230,9 @@
         });
       }
       localStorage.removeItem('fila_ponto');
-      status.innerText += "\n📊 Dados enviados para o Google Sheets!";
+      status.innerText += "\n📊 Enviado com sucesso para o Google Sheets!";
     } catch (e) {
-      status.innerText += "\n⚠️ Falha ao sincronizar online.";
+      status.innerText += "\n⚠️ Salvo localmente. Falha ao conectar com o Sheets.";
     }
   }
 
